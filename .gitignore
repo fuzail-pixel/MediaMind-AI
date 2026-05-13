@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables — NEVER commit these
+.env
+.env.*
+!.env.example
+
+# Testing artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+test_*.db
+*.db
+
+# Docker
+*.log
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Mac
+.DS_Store
+
+# Node / Frontend
+node_modules/
+dist/
+.next/
+frontend/frontend/node_modules/
+
+# Uploads — don't commit user files
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Whisper model cache
+~/.cache/huggingface/

@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0f172a;
+    color: #f1f5f9;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #1e293b;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-md text-sm font-medium transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-surface-2 hover:bg-surface-3 text-text-primary border border-border px-4 py-2 rounded-md text-sm font-medium transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply hover:bg-surface-2 text-text-secondary hover:text-text-primary px-3 py-2 rounded-md text-sm transition-colors duration-150;
+  }
+
+  .btn-danger {
+    @apply bg-status-failed/10 hover:bg-status-failed/20 text-status-failed border border-status-failed/30 px-3 py-1.5 rounded-md text-sm font-medium transition-colors duration-150;
+  }
+
+  .card {
+    @apply bg-surface-1 border border-border rounded-lg;
+  }
+
+  .input {
+    @apply bg-surface-2 border border-border text-text-primary placeholder-text-muted rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent transition-colors w-full;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-pending {
+    @apply badge bg-status-pending/15 text-status-pending;
+  }
+
+  .badge-processing {
+    @apply badge bg-status-processing/15 text-status-processing;
+  }
+
+  .badge-completed {
+    @apply badge bg-status-completed/15 text-status-completed;
+  }
+
+  .badge-failed {
+    @apply badge bg-status-failed/15 text-status-failed;
+  }
+}
+
+.spinner {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

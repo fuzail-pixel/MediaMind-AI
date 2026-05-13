@@ -1,0 +1,17 @@
+# Add this service to your existing docker-compose.yml
+#
+# services:
+#   backend: ...   (already exists)
+#   db: ...        (already exists)
+#
+#   frontend:       <-- add this block
+
+  frontend:
+    build: ./frontend
+    container_name: mediamind_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v1
