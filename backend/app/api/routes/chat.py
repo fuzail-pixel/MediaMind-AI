@@ -1,7 +1,10 @@
 # backend/app/api/routes/chat.py
 
+import json
+from app.core.database import AsyncSessionLocal
 import uuid
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -25,6 +28,11 @@ class QuestionRequest(BaseModel):
 
 class SummarizeRequest(BaseModel):
     document_id: str
+
+class StreamRequest(BaseModel):
+    document_id : str
+    question    : str
+    session_id  : str | None = None
 
 
 # --- Helper ---
@@ -61,7 +69,6 @@ async def ask_question(req: QuestionRequest, db: AsyncSession = Depends(get_db))
 
     document = await get_document_or_404(req.document_id, db)
 
-    # Get or create chat session
     session = None
     if req.session_id:
         try:
@@ -81,10 +88,7 @@ async def ask_question(req: QuestionRequest, db: AsyncSession = Depends(get_db))
         db.add(session)
         await db.flush()
 
-    # --- Answer generation ---
-
     if document.file_type in (FileType.AUDIO, FileType.VIDEO) and document.transcript_path:
-        # Audio/Video — use timestamp-aware answering
         transcript = WhisperService.load_transcript(document.transcript_path)
         if transcript:
             ai_result  = GeminiService.find_topics_with_timestamps(req.question, transcript)
@@ -93,11 +97,8 @@ async def ask_question(req: QuestionRequest, db: AsyncSession = Depends(get_db))
             confidence = 0.85
             excerpt    = timestamps[0]["text"] if timestamps else ""
         else:
-            # Fallback if transcript file missing
             relevant_chunks = VectorService.find_relevant_chunks(
-                req.question,
-                document.extracted_text,
-                top_k=3
+                req.question, document.extracted_text, top_k=3
             )
             context    = "\n\n---\n\n".join(relevant_chunks) if relevant_chunks else document.extracted_text
             ai_result  = GeminiService.answer_question(req.question, context, document.file_type.value)
@@ -105,13 +106,9 @@ async def ask_question(req: QuestionRequest, db: AsyncSession = Depends(get_db))
             timestamps = []
             confidence = ai_result.get("confidence", 0.7)
             excerpt    = ai_result.get("excerpt", "")
-
     else:
-        # PDF — use vector search to find relevant chunks first
         relevant_chunks = VectorService.find_relevant_chunks(
-            req.question,
-            document.extracted_text,
-            top_k=3
+            req.question, document.extracted_text, top_k=3
         )
         context    = "\n\n---\n\n".join(relevant_chunks) if relevant_chunks else document.extracted_text
         ai_result  = GeminiService.answer_question(req.question, context, document.file_type.value)
@@ -119,8 +116,6 @@ async def ask_question(req: QuestionRequest, db: AsyncSession = Depends(get_db))
         timestamps = []
         confidence = ai_result.get("confidence", 0.7)
         excerpt    = ai_result.get("excerpt", "")
-
-    # --- Save messages to DB ---
 
     user_msg = ChatMessage(
         session_id = session.id,
@@ -161,7 +156,6 @@ async def summarize_document(req: SummarizeRequest, db: AsyncSession = Depends(g
 
     document = await get_document_or_404(req.document_id, db)
 
-    # Return cached summary if already generated
     if document.summary:
         return {
             "document_id" : str(document.id),
@@ -170,16 +164,12 @@ async def summarize_document(req: SummarizeRequest, db: AsyncSession = Depends(g
             "summary_data": {"summary": document.summary}
         }
 
-    # Use relevant chunks for summarization too
     relevant_chunks = VectorService.find_relevant_chunks(
-        "main topics key points summary",
-        document.extracted_text,
-        top_k=5
+        "main topics key points summary", document.extracted_text, top_k=5
     )
     context      = "\n\n---\n\n".join(relevant_chunks) if relevant_chunks else document.extracted_text
     summary_data = GeminiService.summarize(context, document.file_type.value)
 
-    # Cache in DB
     document.summary = summary_data.get("summary", "")
     await db.flush()
 
@@ -253,3 +243,89 @@ async def get_all_sessions(db: AsyncSession = Depends(get_db)):  # pragma: no co
             for s in sessions
         ]
     }
+
+
+@router.post("/chat/stream")
+async def stream_answer(req: StreamRequest, db: AsyncSession = Depends(get_db)):  # pragma: no cover
+    """Stream AI answer word by word using Server-Sent Events."""
+
+    document = await get_document_or_404(req.document_id, db)
+
+    session = None
+    if req.session_id:
+        try:
+            session_uuid = uuid.UUID(req.session_id)
+            result = await db.execute(
+                select(ChatSession).where(ChatSession.id == session_uuid)
+            )
+            session = result.scalar_one_or_none()
+        except ValueError:
+            session = None
+
+    if not session:
+        session = ChatSession(
+            document_id=document.id,
+            title=req.question[:60]
+        )
+        db.add(session)
+        await db.flush()
+
+    session_id = str(session.id)
+
+    relevant_chunks = VectorService.find_relevant_chunks(
+        req.question, document.extracted_text, top_k=3
+    )
+    context = "\n\n---\n\n".join(relevant_chunks) if relevant_chunks else document.extracted_text
+
+    user_msg = ChatMessage(
+        session_id=session.id,
+        role=MessageRole.USER,
+        content=req.question
+    )
+    db.add(user_msg)
+    await db.flush()
+
+    async def generate():
+        full_answer = []
+
+        try:
+            # Send session_id first
+            yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
+
+            # ✅ async for — required since stream_answer is now an async generator
+            async for token in GeminiService.stream_answer(
+                req.question,
+                context,
+                document.file_type.value
+            ):
+                full_answer.append(token)
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+            # Save complete answer to DB
+            complete_answer = "".join(full_answer)
+            async with AsyncSessionLocal() as save_db:
+                assistant_msg = ChatMessage(
+                    session_id=session.id,
+                    role=MessageRole.ASSISTANT,
+                    content=complete_answer,
+                    source_document_id=document.id,
+                    confidence_score=0.85
+                )
+                save_db.add(assistant_msg)
+                await save_db.commit()
+
+            yield f"data: {json.dumps({'type': 'done', 'full_answer': complete_answer})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control"              : "no-cache",
+            "X-Accel-Buffering"          : "no",
+            "Connection"                 : "keep-alive",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )

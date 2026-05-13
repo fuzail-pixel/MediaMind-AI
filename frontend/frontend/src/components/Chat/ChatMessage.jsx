@@ -7,7 +7,6 @@ export default function ChatMessage({ msg, onTimestampPlay }) {
 
   return (
     <div className={`flex gap-3 fade-in ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
-      {/* Avatar */}
       {!isUser && (
         <div className="w-7 h-7 rounded-full bg-accent/15 flex items-center justify-center flex-shrink-0 mt-1">
           <Brain size={13} className="text-accent" />
@@ -23,10 +22,15 @@ export default function ChatMessage({ msg, onTimestampPlay }) {
           }`}
         >
           {msg.content}
+          {msg.streaming && (
+            <span
+              className="inline-block w-0.5 h-3.5 bg-accent ml-0.5 align-middle"
+              style={{ animation: 'blink 1s step-start infinite' }}
+            />
+          )}
         </div>
 
-        {/* Confidence + timestamps for assistant */}
-        {!isUser && (
+        {!isUser && !msg.streaming && (
           <div className="w-full">
             {msg.confidence != null && (
               <span className="text-xs text-text-muted">

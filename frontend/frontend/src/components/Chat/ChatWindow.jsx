@@ -1,18 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react'
 import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
-import { askQuestion, getChatHistory } from '../../services/api'
+import { getChatHistory } from '../../services/api'
 import { MessageSquare, Loader } from 'lucide-react'
+
+const STREAM_URL = `${import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'}/chat/stream`
 
 export default function ChatWindow({ documentId, fileType, onTimestampPlay }) {
   const [messages, setMessages] = useState([])
   const [sessionId, setSessionId] = useState(null)
-  const [sending, setSending] = useState(false)
+  const [streaming, setStreaming] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [error, setError] = useState('')
   const bottomRef = useRef(null)
+  const abortRef = useRef(null)
 
-  // Load chat history on mount
   useEffect(() => {
     const load = async () => {
       setLoadingHistory(true)
@@ -22,19 +24,17 @@ export default function ChatWindow({ documentId, fileType, onTimestampPlay }) {
         if (sessions.length > 0) {
           const latest = sessions[sessions.length - 1]
           setSessionId(latest.session_id)
-          const msgs = []
-          for (const m of latest.messages) {
-            msgs.push({
+          setMessages(
+            latest.messages.map((m) => ({
               role: m.role,
               content: m.content,
               confidence: m.confidence,
               timestamps: m.timestamps,
-            })
-          }
-          setMessages(msgs)
+            }))
+          )
         }
       } catch {
-        // Fresh start — no history
+        // No history yet
       } finally {
         setLoadingHistory(false)
       }
@@ -47,36 +47,110 @@ export default function ChatWindow({ documentId, fileType, onTimestampPlay }) {
   }, [messages])
 
   const handleSend = async (text) => {
-    const userMsg = { role: 'user', content: text }
-    setMessages((prev) => [...prev, userMsg])
-    setSending(true)
     setError('')
+    setStreaming(true)
+
+    // Add user message immediately
+    setMessages((prev) => [...prev, { role: 'user', content: text }])
+
+    const controller = new AbortController()
+    abortRef.current = controller
 
     try {
       const payload = { document_id: documentId, question: text }
       if (sessionId) payload.session_id = sessionId
 
-      const res = await askQuestion(payload)
-      const d = res.data
+      const response = await fetch(STREAM_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      })
 
-      if (!sessionId) setSessionId(d.session_id)
+      if (!response.ok) throw new Error(`Server error: ${response.status}`)
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: d.answer,
-          confidence: d.confidence,
-          timestamps: d.timestamps || [],
-        },
-      ])
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let assistantAdded = false
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const jsonStr = trimmed.slice(5).trim()
+          if (!jsonStr) continue
+
+          let event
+          try { event = JSON.parse(jsonStr) } catch { continue }
+
+          if (event.type === 'session') {
+            if (!sessionId) setSessionId(event.session_id)
+
+          } else if (event.type === 'token') {
+            if (!assistantAdded) {
+              // Add assistant message on the FIRST token, not before
+              // This prevents the overlap between thinking dots and streaming message
+              setMessages((prev) => [
+                ...prev,
+                { role: 'assistant', content: event.content, confidence: null, timestamps: [], streaming: true },
+              ])
+              assistantAdded = true
+            } else {
+              setMessages((prev) => {
+                const updated = [...prev]
+                const last = { ...updated[updated.length - 1] }
+                last.content += event.content
+                updated[updated.length - 1] = last
+                return updated
+              })
+            }
+
+          } else if (event.type === 'done') {
+            if (!assistantAdded) {
+              // Edge case: done fired with no tokens (empty answer)
+              setMessages((prev) => [
+                ...prev,
+                { role: 'assistant', content: event.full_answer || '', confidence: null, timestamps: [], streaming: false },
+              ])
+            } else {
+              setMessages((prev) => {
+                const updated = [...prev]
+                const last = { ...updated[updated.length - 1] }
+                last.content = event.full_answer || last.content
+                last.streaming = false
+                updated[updated.length - 1] = last
+                return updated
+              })
+            }
+          }
+        }
+      }
     } catch (e) {
+      if (e.name === 'AbortError') return
       setError(e.message)
-      setMessages((prev) => prev.slice(0, -1)) // remove optimistic user msg
+      // Remove assistant message if it was added
+      setMessages((prev) => {
+        const updated = [...prev]
+        if (updated[updated.length - 1]?.role === 'assistant') updated.pop()
+        return updated
+      })
     } finally {
-      setSending(false)
+      setStreaming(false)
+      abortRef.current = null
     }
   }
+
+  useEffect(() => {
+    return () => abortRef.current?.abort()
+  }, [])
 
   return (
     <div className="flex flex-col h-full">
@@ -84,6 +158,12 @@ export default function ChatWindow({ documentId, fileType, onTimestampPlay }) {
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border flex-shrink-0">
         <MessageSquare size={14} className="text-accent" />
         <span className="text-sm font-medium text-text-primary">Chat</span>
+        {streaming && (
+          <span className="ml-auto flex items-center gap-1.5 text-xs text-accent">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+            Streaming
+          </span>
+        )}
       </div>
 
       {/* Messages */}
@@ -105,15 +185,12 @@ export default function ChatWindow({ documentId, fileType, onTimestampPlay }) {
           </div>
         ) : (
           messages.map((msg, i) => (
-            <ChatMessage
-              key={i}
-              msg={msg}
-              onTimestampPlay={onTimestampPlay}
-            />
+            <ChatMessage key={i} msg={msg} onTimestampPlay={onTimestampPlay} />
           ))
         )}
 
-        {sending && (
+        {/* Thinking dots — shown only while streaming and no assistant message yet */}
+        {streaming && (messages.length === 0 || messages[messages.length - 1]?.role === 'user') && (
           <div className="flex gap-3 fade-in">
             <div className="w-7 h-7 rounded-full bg-accent/15 flex items-center justify-center flex-shrink-0">
               <Loader size={13} className="text-accent spinner" />
@@ -133,7 +210,7 @@ export default function ChatWindow({ documentId, fileType, onTimestampPlay }) {
         )}
 
         {error && (
-          <div className="text-xs text-status-failed bg-status-failed/10 border border-status-failed/20 rounded-md px-3 py-2">
+          <div className="text-xs text-status-failed bg-status-failed/10 border border-status-failed/20 rounded-md px-3 py-2 fade-in">
             {error}
           </div>
         )}
@@ -141,8 +218,7 @@ export default function ChatWindow({ documentId, fileType, onTimestampPlay }) {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <ChatInput onSend={handleSend} disabled={sending} />
+      <ChatInput onSend={handleSend} disabled={streaming} />
     </div>
   )
 }

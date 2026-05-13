@@ -4,6 +4,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import HumanMessage
 from app.core.config import get_settings
 from typing import Optional
+import asyncio
 import json
 
 settings = get_settings()
@@ -130,7 +131,6 @@ Respond in this exact JSON format:
         """
         segments = transcript_data.get("segments", [])
 
-        # Check BEFORE loading LLM — avoids credential errors in CI
         if not segments:
             return {"timestamps": [], "answer": "No transcript segments available"}
 
@@ -183,3 +183,43 @@ Respond in this exact JSON format:
         m = int((seconds % 3600) // 60)
         s = int(seconds % 60)
         return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+    @classmethod
+    async def stream_answer(cls, question: str, context: str, file_type: str = "document"):
+        """
+        Stream answer word by word using Gemini.
+        Splits each Gemini chunk into individual words for smooth streaming.
+        """
+        llm = cls.get_llm()
+
+        prompt = f"""You are an intelligent assistant that answers questions based ONLY on the provided content.
+
+Content Type: {file_type}
+
+Content:
+\"\"\"
+{context[:8000]}
+\"\"\"
+
+Question: {question}
+
+Instructions:
+- Answer based strictly on the content above
+- If the answer is not in the content, say "I couldn't find this information in the provided content"
+- Be concise and precise
+
+Answer directly without JSON formatting:"""
+
+        first_word = True
+        for chunk in llm.stream([HumanMessage(content=prompt)]):
+            if chunk.content:
+                words = chunk.content.split(' ')
+                for word in words:
+                    if not word:
+                        continue
+                    # Preserve spacing — add space before every word except the first
+                    token = word if first_word else ' ' + word
+                    first_word = False
+                    yield token
+                    await asyncio.sleep(0.04)  # 40ms per word — adjust to taste
