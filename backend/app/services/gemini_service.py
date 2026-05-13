@@ -128,11 +128,13 @@ Respond in this exact JSON format:
         """
         For audio/video — find which timestamps are relevant to a question.
         """
-        llm = cls.get_llm()
         segments = transcript_data.get("segments", [])
 
+        # Check BEFORE loading LLM — avoids credential errors in CI
         if not segments:
             return {"timestamps": [], "answer": "No transcript segments available"}
+
+        llm = cls.get_llm()
 
         segment_list = "\n".join([
             f"[{s['start']}s - {s['end']}s]: {s['text']}"

@@ -85,14 +85,15 @@ def test_summarize_fallback():
     assert result["summary"] == "Plain text summary"
     assert result["key_points"] == []
 
-
 def test_find_topics_with_timestamps_no_segments():
     """Test timestamp finding with empty transcript."""
+    # No need to call LLM when segments are empty — should return early
     result = GeminiService.find_topics_with_timestamps(
         "question",
         {"segments": []}
     )
     assert result["timestamps"] == [] or "answer" in result
+
 
 
 def test_find_topics_with_timestamps_success():
