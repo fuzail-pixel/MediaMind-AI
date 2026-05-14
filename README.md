@@ -36,6 +36,7 @@ MediaMind AI allows users to upload PDF documents, audio, and video files and in
 - **Semantic Vector Search** — pgvector-powered similarity search across all uploaded documents
 - **Chat History** — Persistent conversation sessions stored per document
 - **Background Processing** — File processing happens asynchronously so uploads return instantly
+- ⚡ **Real-time Streaming** — Word-by-word streaming responses via Server-Sent Events (SSE)
 
 ---
 
@@ -45,7 +46,7 @@ MediaMind AI allows users to upload PDF documents, audio, and video files and in
 | Component | Technology | Purpose |
 |---|---|---|
 | Framework | FastAPI (Python 3.11) | REST API |
-| LLM | Google Gemini 2.5 Flash | Q&A, Summarization |
+| LLM | Google Gemini 2.5 Flash | Q&A, Summarization, Streaming |
 | LLM Framework | LangChain | LLM integration |
 | Transcription | faster-whisper (local) | Audio/Video to text |
 | PDF Extraction | pdfplumber + PyPDF2 | Text extraction from PDFs |
@@ -53,13 +54,14 @@ MediaMind AI allows users to upload PDF documents, audio, and video files and in
 | Database | PostgreSQL 16 + pgvector | Data + vector storage |
 | ORM | SQLAlchemy (async) | Database interactions |
 | Server | Uvicorn | ASGI server |
+| Streaming | Server-Sent Events (SSE) | Real-time word-by-word responses |
 
 ### Frontend
 | Component | Technology | Purpose |
 |---|---|---|
 | Framework | React + Vite | UI |
 | Styling | Tailwind CSS | Design system |
-| HTTP Client | Axios | API calls |
+| HTTP Client | Axios + Fetch API | API calls + SSE streaming |
 | Routing | React Router DOM | Page navigation |
 | Icons | Lucide React | Icon library |
 | Media Player | HTML5 native | Audio/Video playback |
@@ -93,7 +95,7 @@ MediaMind-AI/
 │   │   │   └── routes/
 │   │   │       ├── __init__.py
 │   │   │       ├── upload.py           # File upload, list, get, delete, serve, search
-│   │   │       └── chat.py             # Q&A, summarize, chat history endpoints
+│   │   │       └── chat.py             # Q&A, summarize, stream, chat history endpoints
 │   │   │
 │   │   ├── core/
 │   │   │   ├── __init__.py
@@ -109,7 +111,7 @@ MediaMind-AI/
 │   │   │   ├── __init__.py
 │   │   │   ├── pdf_service.py          # PDF text extraction (pdfplumber + PyPDF2)
 │   │   │   ├── whisper_service.py      # Audio/video transcription + timestamps
-│   │   │   ├── gemini_service.py       # LangChain + Gemini Q&A, summarization
+│   │   │   ├── gemini_service.py       # LangChain + Gemini Q&A, summarization, streaming
 │   │   │   └── vector_service.py       # Embeddings, chunking, pgvector search
 │   │   │
 │   │   └── tests/
@@ -117,7 +119,7 @@ MediaMind-AI/
 │   │       ├── conftest.py             # Shared fixtures, isolated test DB per test
 │   │       ├── test_upload.py          # Upload, list, get, delete, serve endpoints
 │   │       ├── test_chat.py            # Q&A, summarize, session endpoints
-│   │       ├── test_gemini_service.py  # Gemini Q&A, summarize, timestamps
+│   │       ├── test_gemini_service.py  # Gemini Q&A, summarize, timestamps, streaming
 │   │       ├── test_pdf_service.py     # PDF extraction, validation
 │   │       ├── test_whisper_service.py # Transcription, timestamps, save/load
 │   │       ├── test_vector_service.py  # Embeddings, chunking, search
@@ -138,8 +140,8 @@ MediaMind-AI/
 │       │   ├── components/
 │       │   │   ├── Chat/
 │       │   │   │   ├── ChatInput.jsx       # Message input box
-│       │   │   │   ├── ChatMessage.jsx     # Individual chat bubble
-│       │   │   │   ├── ChatWindow.jsx      # Full chat interface
+│       │   │   │   ├── ChatMessage.jsx     # Individual chat bubble + streaming cursor
+│       │   │   │   ├── ChatWindow.jsx      # Full chat interface with SSE streaming
 │       │   │   │   └── TimestampCard.jsx   # Clickable timestamp for audio/video
 │       │   │   ├── Document/
 │       │   │   │   ├── DocumentCard.jsx    # Single document card
@@ -158,7 +160,7 @@ MediaMind-AI/
 │       │   │   ├── Library.jsx             # All documents page
 │       │   │   └── DocumentView.jsx        # Single document + chat page
 │       │   ├── services/
-│       │   │   └── api.js                  # All Axios API calls
+│       │   │   └── api.js                  # All Axios API calls + streaming fetch
 │       │   ├── App.jsx                     # Router setup
 │       │   ├── main.jsx                    # React entry point
 │       │   └── index.css                   # Global styles + Tailwind
@@ -189,8 +191,8 @@ MediaMind-AI/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/fuzail-pixel/MediaMind-AI.git
-cd MediaMind-AI
+git clone https://github.com/fuzail-pixel/MediaMind-AI-.git
+cd MediaMind-AI-
 ```
 
 ### 2. Configure Environment Variables
@@ -410,6 +412,32 @@ For audio/video, timestamps field contains:
 ]
 ```
 
+#### Stream Answer (Real-time) ⚡
+```
+POST /chat/stream
+Content-Type: application/json
+
+Body:
+{
+  "document_id": "uuid",
+  "question": "What is the main topic?",
+  "session_id": "uuid"  (optional)
+}
+
+Response: Server-Sent Events (text/event-stream)
+data: {"type": "session", "session_id": "uuid"}
+data: {"type": "token", "content": "The "}
+data: {"type": "token", "content": "main "}
+data: {"type": "token", "content": "topic "}
+data: {"type": "done", "full_answer": "The main topic is..."}
+
+Event types:
+- session → contains session_id for conversation continuity
+- token   → single word to append to UI in real time
+- done    → streaming complete, full answer saved to DB
+- error   → something went wrong
+```
+
 #### Summarize Document
 ```
 POST /chat/summarize
@@ -508,7 +536,7 @@ Response 200:
 
 **Document View (`/document/:id`)** — Split panel layout:
 - Left panel: Document info, AI summary with key points, media player for audio/video
-- Right panel: Chat interface with message history, confidence scores, and timestamp cards
+- Right panel: Chat interface with real-time streaming responses, confidence scores, and timestamp cards
 
 ### Key Interactions
 
@@ -518,16 +546,35 @@ Response 200:
 3. Status polls from `pending` → `processing` → `completed`
 4. Redirects to document view when ready
 
-**Asking a Question:**
+**Asking a Question (Streaming):**
 1. Type question in chat input
-2. AI responds with answer + confidence score
-3. For audio/video: timestamp cards appear below answer
-4. Click **▶ Play** on timestamp card to seek media player to that moment
+2. Words appear one by one in real time as Gemini generates them
+3. Blinking `|` cursor shows while streaming is active
+4. Cursor disappears and confidence score appears when done
+5. For audio/video: timestamp cards appear below the completed answer
+6. Click **▶ Play** on timestamp card to seek media player to that moment
 
 **Semantic Search:**
 1. Type in navbar search bar (min 3 characters)
 2. Dropdown shows matching documents with similarity scores
 3. Click result to open that document's chat page
+
+### Streaming Implementation
+
+The frontend uses the native `fetch` API with `ReadableStream` to consume SSE events:
+
+```javascript
+const response = await fetch('http://localhost:8000/api/v1/chat/stream', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ document_id, question, session_id })
+})
+
+const reader = response.body.getReader()
+// Reads token events and appends words to message bubble in real time
+```
+
+An `AbortController` cancels the stream cleanly if the user navigates away mid-answer.
 
 ### Running the Frontend Locally
 
@@ -563,10 +610,11 @@ docker exec mediamind_backend pytest app/tests/test_upload.py -v
 
 ### Test Results
 
-- **103 tests** across 8 test files
+- **105 tests** across 8 test files
 - **97% code coverage** (above the 95% requirement)
 - All tests use isolated SQLite databases — no real PostgreSQL needed for testing
 - External services (Gemini, Whisper) are mocked in all tests
+- Streaming methods tested with async generators
 
 ### Test Files
 
@@ -574,7 +622,7 @@ docker exec mediamind_backend pytest app/tests/test_upload.py -v
 |---|---|
 | `test_upload.py` | File upload, listing, retrieval, deletion, serving, search |
 | `test_chat.py` | Q&A, summarization, chat sessions, history |
-| `test_gemini_service.py` | LLM responses, JSON parsing, timestamp extraction |
+| `test_gemini_service.py` | LLM responses, JSON parsing, timestamps, streaming |
 | `test_whisper_service.py` | Transcription, timestamp search, save/load |
 | `test_pdf_service.py` | PDF text extraction, validation, page count |
 | `test_vector_service.py` | Embeddings, chunking, similarity search |
@@ -651,10 +699,14 @@ python:3.11-slim base image
 ```
 User Browser
      │
-     ▼
-React Frontend (Port 3000)
+     ├──► Regular HTTP/REST (axios)
      │
-     ▼ HTTP/REST
+     └──► SSE Streaming (fetch + ReadableStream) ⚡
+          │
+          ▼
+React Frontend (Port 3000)
+          │
+          ▼
 FastAPI Backend (Port 8000)
      │
      ├──► PDF Service (pdfplumber/PyPDF2)
@@ -668,9 +720,10 @@ FastAPI Backend (Port 8000)
      │         └── Semantic search via pgvector
      │
      ├──► Gemini Service (LangChain + Google Gemini)
-     │         └── Answers questions
+     │         └── Answers questions (regular + streaming)
      │         └── Generates summaries
      │         └── Finds relevant timestamps
+     │         └── Streams word-by-word via async generator ⚡
      │
      └──► PostgreSQL + pgvector (Port 5432)
                └── Documents table (text, embeddings, metadata)
@@ -692,18 +745,43 @@ FastAPI Backend (Port 8000)
 7. Frontend polls GET /documents/{id} every 3s until completed
 ```
 
-### Request Flow — Ask Question
+### Request Flow — Streaming Answer ⚡
+
+```
+1. User asks question → POST /api/v1/chat/stream
+2. Document fetched from DB
+3. Vector service finds relevant text chunks
+4. FastAPI opens SSE connection to frontend
+5. Gemini starts generating → words yielded one by one (40ms delay)
+6. Each word sent as SSE event: data: {"type": "token", "content": "word "}
+7. Frontend appends each word to message bubble in real time
+8. Blinking cursor shows while streaming active
+9. done event fires → full answer saved to DB → cursor disappears
+```
+
+### Request Flow — Regular Q&A
 
 ```
 1. User asks question → POST /api/v1/chat/ask
 2. Document fetched from DB
 3. Vector service finds relevant text chunks
 4. Chunks sent to Gemini as context
-5. Gemini returns answer + confidence + excerpt
+5. Gemini returns complete answer + confidence + excerpt
 6. For audio/video: Gemini identifies relevant timestamps
 7. Response returned with answer + timestamps
 8. Chat session + messages saved to DB
 ```
+
+---
+
+## Bonus Features Implemented
+
+| Bonus | Status | Implementation |
+|---|---|---|
+| Vector search (FAISS/Pinecone) | ✅ | pgvector with sentence-transformers embeddings |
+| Real-time streaming responses | ✅ | SSE word-by-word streaming via async generator |
+| Multi-user authentication | ❌ | Not implemented |
+| Rate limiting + Redis | ❌ | Not implemented |
 
 ---
 
