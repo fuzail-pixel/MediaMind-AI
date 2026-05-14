@@ -187,3 +187,38 @@ def test_find_topics_with_timestamps_invalid_json_fallback():
 
     assert result["answer"] == "not json"
     assert result["relevant_segments"] == []
+
+
+@pytest.mark.asyncio
+async def test_stream_answer_success():
+    """Test stream_answer yields words one by one."""
+    mock_chunk1 = MagicMock()
+    mock_chunk1.content = "Hello world"
+    mock_chunk2 = MagicMock()
+    mock_chunk2.content = "from Gemini"
+
+    with patch.object(GeminiService, 'get_llm') as mock_llm:
+        mock_llm.return_value.stream.return_value = [mock_chunk1, mock_chunk2]
+
+        results = []
+        async for token in GeminiService.stream_answer("test question", "test context"):
+            results.append(token)
+
+    assert len(results) > 0
+    assert any("Hello" in r for r in results)
+
+
+@pytest.mark.asyncio
+async def test_stream_answer_empty_chunk():
+    """Test stream_answer skips empty chunks."""
+    mock_chunk = MagicMock()
+    mock_chunk.content = ""
+
+    with patch.object(GeminiService, 'get_llm') as mock_llm:
+        mock_llm.return_value.stream.return_value = [mock_chunk]
+
+        results = []
+        async for token in GeminiService.stream_answer("question", "context"):
+            results.append(token)
+
+    assert results == []
