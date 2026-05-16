@@ -22,10 +22,11 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: list = ["pdf", "mp3", "mp4", "wav", "m4a", "avi", "mov", "mkv"]
 
     # Google OAuth
-    GOOGLE_CLIENT_ID: str
-    GOOGLE_CLIENT_SECRET: str
-    SECRET_KEY: str
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    SECRET_KEY: str = "test-secret-key-for-ci-only"
     FRONTEND_URL: str = "http://localhost:3000"
+    
 
     # JWT
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days

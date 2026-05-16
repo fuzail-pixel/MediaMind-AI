@@ -34,8 +34,11 @@ jobs:
       - name: Run tests with coverage
         working-directory: backend
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DATABASE_URL: postgresql://mediamind:mediamind123@localhost:5432/mediamind_db
+          GEMINI_API_KEY       : ${{ secrets.GEMINI_API_KEY }}
+          DATABASE_URL         : postgresql://mediamind:mediamind123@localhost:5432/mediamind_db
+          GOOGLE_CLIENT_ID     : ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET : ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          SECRET_KEY           : ${{ secrets.SECRET_KEY }}
         run: |
           pytest app/tests/ --cov=app --cov-report=term-missing --cov-fail-under=95
 
