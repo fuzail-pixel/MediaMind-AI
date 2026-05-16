@@ -1,6 +1,6 @@
 # backend/app/models/document.py
 
-from sqlalchemy import Column, String, Integer, Float, DateTime, Text, Enum
+from sqlalchemy import Column, String, Integer, Float, DateTime, Text, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -26,32 +26,19 @@ class Document(Base):
     __tablename__ = "documents"
 
     id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id         = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)  # nullable for backward compat
     filename        = Column(String(255), nullable=False)
     original_name   = Column(String(255), nullable=False)
     file_type       = Column(Enum(FileType), nullable=False)
-    file_size       = Column(Integer, nullable=False)          # in bytes
-    file_path       = Column(String(500), nullable=False)      # path on disk
-
-    # Extracted content
-    extracted_text  = Column(Text, nullable=True)              # PDF text / transcript
-    summary         = Column(Text, nullable=True)              # AI generated summary
-
-    # Audio/Video specific
-    duration        = Column(Float, nullable=True)             # in seconds
-    transcript_path = Column(String(500), nullable=True)       # path to full transcript
-
-    # Vector embedding for semantic search (1536 dimensions)
+    file_size       = Column(Integer, nullable=False)
+    file_path       = Column(String(500), nullable=False)
+    extracted_text  = Column(Text, nullable=True)
+    summary         = Column(Text, nullable=True)
+    duration        = Column(Float, nullable=True)
+    transcript_path = Column(String(500), nullable=True)
     embedding       = Column(Vector(1536), nullable=True)
-
-    # Status tracking
-    status          = Column(
-                        Enum(ProcessingStatus),
-                        default=ProcessingStatus.PENDING,
-                        nullable=False
-                      )
+    status          = Column(Enum(ProcessingStatus), default=ProcessingStatus.PENDING, nullable=False)
     error_message   = Column(Text, nullable=True)
-
-    # Timestamps
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
 

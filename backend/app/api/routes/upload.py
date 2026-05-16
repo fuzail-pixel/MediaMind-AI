@@ -3,19 +3,19 @@
 import os
 import uuid
 import aiofiles
+import mimetypes
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
+from sqlalchemy import select
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.models.document import Document, FileType, ProcessingStatus
+from app.models.user import User
 from app.services.pdf_service import PDFService
 from app.services.whisper_service import WhisperService
 from app.services.vector_service import VectorService
-
-from fastapi.responses import JSONResponse, FileResponse
-import mimetypes
+from app.core.security import get_current_user
 
 router = APIRouter()
 settings = get_settings()
@@ -51,7 +51,6 @@ async def process_document(document_id: str, file_path: str, file_type: FileType
 
     async with AsyncSessionLocal() as db:
         try:
-            # Fetch document
             result = await db.execute(
                 select(Document).where(Document.id == uuid.UUID(document_id))
             )
@@ -59,34 +58,24 @@ async def process_document(document_id: str, file_path: str, file_type: FileType
             if not document:
                 return
 
-            # Mark as processing
             document.status = ProcessingStatus.PROCESSING
             await db.commit()
 
             if file_type == FileType.PDF:
-                # Extract text from PDF
                 extracted_text = PDFService.extract_text(file_path)
                 document.extracted_text = extracted_text
-                # Commit text first before storing embeddings
                 await db.commit()
-                # Store vector embedding
                 await VectorService.store_embeddings(db, document)
                 document.status = ProcessingStatus.COMPLETED
 
             elif file_type in (FileType.AUDIO, FileType.VIDEO):
-                # Transcribe with Whisper
                 transcript = WhisperService.transcribe(file_path)
-
-                # Save transcript JSON next to the file
                 transcript_path = file_path.rsplit(".", 1)[0] + "_transcript.json"
                 WhisperService.save_transcript(transcript, transcript_path)
-
                 document.extracted_text  = transcript["text"]
                 document.transcript_path = transcript_path
                 document.duration        = transcript["duration"]
-                # Commit text first before storing embeddings
                 await db.commit()
-                # Store vector embedding
                 await VectorService.store_embeddings(db, document)
                 document.status = ProcessingStatus.COMPLETED
 
@@ -107,15 +96,16 @@ async def process_document(document_id: str, file_path: str, file_type: FileType
 
 
 @router.post("/upload")
-async def upload_file( # pragma: no cover
+async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db)
-):
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):  # pragma: no cover
     """Upload a PDF, audio, or video file for processing."""
 
     max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
-    contents = await file.read()
+    contents  = await file.read()
 
     if len(contents) > max_bytes:
         raise HTTPException(
@@ -123,8 +113,7 @@ async def upload_file( # pragma: no cover
             detail=f"File too large. Maximum size is {settings.MAX_FILE_SIZE_MB}MB"
         )
 
-    file_type = get_file_type(file.filename)
-
+    file_type       = get_file_type(file.filename)
     ext             = file.filename.rsplit(".", 1)[-1].lower()
     unique_filename = f"{uuid.uuid4()}.{ext}"
     file_path       = os.path.join(settings.UPLOAD_DIR, unique_filename)
@@ -134,6 +123,7 @@ async def upload_file( # pragma: no cover
         await f.write(contents)
 
     document = Document(
+        user_id       = current_user.id,
         filename      = unique_filename,
         original_name = file.filename,
         file_type     = file_type,
@@ -145,8 +135,6 @@ async def upload_file( # pragma: no cover
     await db.flush()
 
     doc_id = str(document.id)
-
-    # Kick off background processing — response returns immediately
     background_tasks.add_task(process_document, doc_id, file_path, file_type)
 
     return JSONResponse(
@@ -163,9 +151,16 @@ async def upload_file( # pragma: no cover
 
 
 @router.get("/documents")
-async def list_documents(db: AsyncSession = Depends(get_db)): # pragma: no cover
-    """List all uploaded documents."""
-    result = await db.execute(select(Document).order_by(Document.created_at.desc()))
+async def list_documents(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):  # pragma: no cover
+    """List all uploaded documents for current user."""
+    result = await db.execute(
+        select(Document)
+        .where(Document.user_id == current_user.id)
+        .order_by(Document.created_at.desc())
+    )
     documents = result.scalars().all()
     return {
         "total": len(documents),
@@ -184,7 +179,11 @@ async def list_documents(db: AsyncSession = Depends(get_db)): # pragma: no cover
 
 
 @router.get("/search")
-async def search_documents(q: str, db: AsyncSession = Depends(get_db)): # pragma: no cover
+async def search_documents(
+    q: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):  # pragma: no cover
     """Semantic vector search across all uploaded documents."""
     if not q or len(q.strip()) < 3:
         raise HTTPException(
@@ -202,14 +201,23 @@ async def search_documents(q: str, db: AsyncSession = Depends(get_db)): # pragma
 
 
 @router.get("/documents/{document_id}")
-async def get_document(document_id: str, db: AsyncSession = Depends(get_db)): # pragma: no cover
+async def get_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):  # pragma: no cover
     """Get details of a specific document."""
     try:
         doc_uuid = uuid.UUID(document_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid document ID format")
 
-    result = await db.execute(select(Document).where(Document.id == doc_uuid))
+    result = await db.execute(
+        select(Document).where(
+            Document.id == doc_uuid,
+            Document.user_id == current_user.id
+        )
+    )
     document = result.scalar_one_or_none()
 
     if not document:
@@ -229,24 +237,31 @@ async def get_document(document_id: str, db: AsyncSession = Depends(get_db)): # 
 
 
 @router.delete("/documents/{document_id}")
-async def delete_document(document_id: str, db: AsyncSession = Depends(get_db)): # pragma: no cover
+async def delete_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):  # pragma: no cover
     """Delete a document and its file from disk."""
     try:
         doc_uuid = uuid.UUID(document_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid document ID format")
 
-    result = await db.execute(select(Document).where(Document.id == doc_uuid))
+    result = await db.execute(
+        select(Document).where(
+            Document.id == doc_uuid,
+            Document.user_id == current_user.id
+        )
+    )
     document = result.scalar_one_or_none()
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Delete file from disk
     if os.path.exists(document.file_path):
         os.remove(document.file_path)
 
-    # Delete transcript if exists
     if document.transcript_path and os.path.exists(document.transcript_path):
         os.remove(document.transcript_path)
 
@@ -255,14 +270,23 @@ async def delete_document(document_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/documents/{document_id}/file")
-async def serve_file(document_id: str, db: AsyncSession = Depends(get_db)): # pragma: no cover
+async def serve_file(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):  # pragma: no cover
     """Serve the original uploaded file for a document."""
     try:
         doc_uuid = uuid.UUID(document_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid document ID format")
 
-    result = await db.execute(select(Document).where(Document.id == doc_uuid))
+    result = await db.execute(
+        select(Document).where(
+            Document.id == doc_uuid,
+            Document.user_id == current_user.id
+        )
+    )
     document = result.scalar_one_or_none()
 
     if not document:
@@ -272,10 +296,8 @@ async def serve_file(document_id: str, db: AsyncSession = Depends(get_db)): # pr
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    # Attempt to guess MIME type from filename; fallback to octet-stream
     mime_type, _ = mimetypes.guess_type(file_path)
     if not mime_type:
-        # fallback based on stored file_type
         if document.file_type == FileType.VIDEO:
             mime_type = "video/mp4"
         elif document.file_type == FileType.AUDIO:
@@ -285,4 +307,8 @@ async def serve_file(document_id: str, db: AsyncSession = Depends(get_db)): # pr
         else:
             mime_type = "application/octet-stream"
 
-    return FileResponse(path=file_path, media_type=mime_type, filename=document.original_name)
+    return FileResponse(
+        path       = file_path,
+        media_type = mime_type,
+        filename   = document.original_name
+    )

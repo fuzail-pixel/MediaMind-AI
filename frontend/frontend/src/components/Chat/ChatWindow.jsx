@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
-import { getChatHistory } from '../../services/api'
+import { getChatHistory, streamAnswer } from '../../services/api'
 import { MessageSquare, Loader } from 'lucide-react'
+import { authService } from '../../services/auth'
 
 const STREAM_URL = `${import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'}/chat/stream`
 
@@ -60,9 +61,13 @@ export default function ChatWindow({ documentId, fileType, onTimestampPlay }) {
       const payload = { document_id: documentId, question: text }
       if (sessionId) payload.session_id = sessionId
 
+      // CORRECT — Authorization inside headers object
       const response = await fetch(STREAM_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authService.getToken()}`  // ← inside headers
+        },
         body: JSON.stringify(payload),
         signal: controller.signal,
       })

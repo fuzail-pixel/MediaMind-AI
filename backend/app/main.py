@@ -9,6 +9,7 @@ from app.core.database import engine, Base
 
 import app.models.document
 import app.models.chat
+import app.models.user
 
 settings = get_settings()
 
@@ -54,3 +55,6 @@ app.include_router(upload.router, prefix="/api/v1", tags=["upload"])
 
 from app.api.routes import chat
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
+
+from app.api.routes import auth
+app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
