@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.core.database import Base, get_db
+from app.core.security import create_access_token
 
 
 def make_engine():
@@ -34,7 +35,33 @@ async def test_db():
 
 
 @pytest_asyncio.fixture
-async def client(test_db):
+async def test_user(test_db):
+    """Create a test user and return it."""
+    from app.models.user import User
+    engine, SessionLocal, db_name = test_db
+    async with SessionLocal() as session:
+        user = User(
+            google_id  = f"google_{uuid.uuid4().hex}",
+            email      = f"test_{uuid.uuid4().hex}@gmail.com",
+            full_name  = "Test User",
+            avatar_url = "https://example.com/avatar.jpg",
+            is_active  = True
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+@pytest_asyncio.fixture
+async def auth_token(test_user):
+    """Create a valid JWT token for the test user."""
+    return create_access_token({"sub": str(test_user.id)})
+
+
+@pytest_asyncio.fixture
+async def client(test_db, test_user, auth_token):
+    """Authenticated HTTP test client."""
     engine, SessionLocal, db_name = test_db
 
     async def override_get_db():
@@ -48,11 +75,18 @@ async def client(test_db):
             finally:
                 await session.close()
 
-    app.dependency_overrides[get_db] = override_get_db
+    # Override auth dependency to return test user
+    from app.core.security import get_current_user
+    async def override_get_current_user():
+        return test_user
+
+    app.dependency_overrides[get_db]           = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://test"
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {auth_token}"}
     ) as ac:
         yield ac
 
@@ -60,7 +94,8 @@ async def client(test_db):
 
 
 @pytest_asyncio.fixture
-async def db_session(test_db):
+async def db_session(test_db, test_user):
+    """Direct DB session — shares same DB as client fixture."""
     engine, SessionLocal, db_name = test_db
 
     async def override_get_db():
@@ -74,7 +109,12 @@ async def db_session(test_db):
             finally:
                 await session.close()
 
-    app.dependency_overrides[get_db] = override_get_db
+    from app.core.security import get_current_user
+    async def override_get_current_user():
+        return test_user
+
+    app.dependency_overrides[get_db]           = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
 
     async with SessionLocal() as session:
         yield session
