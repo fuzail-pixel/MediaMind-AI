@@ -2,6 +2,7 @@
 
 import pytest
 import pytest_asyncio
+import uuid
 from unittest.mock import patch, MagicMock, AsyncMock
 from httpx import AsyncClient, ASGITransport
 from app.main import app
@@ -10,10 +11,10 @@ from app.core.database import get_db
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
+
 @pytest.fixture(autouse=True)
 def clear_overrides():
     """Clear get_current_user override before each auth test."""
-    from app.core.security import get_current_user
     app.dependency_overrides.pop(get_current_user, None)
     yield
     app.dependency_overrides.pop(get_current_user, None)
@@ -117,6 +118,7 @@ async def test_get_me_invalid_token(raw_client: AsyncClient):
 async def test_get_me_valid_token(raw_client: AsyncClient, test_db):
     """Test /auth/me with valid token returns user info."""
     from app.models.user import User
+    from sqlalchemy import select
 
     engine, SessionLocal, db_name = test_db
 
@@ -130,8 +132,10 @@ async def test_get_me_valid_token(raw_client: AsyncClient, test_db):
         )
         session.add(user)
         await session.commit()
-        ##await session.refresh(user)
-        user_id = str(user.id)
+        # Fetch back to get the generated ID
+        result  = await session.execute(select(User).where(User.email == "validuser@gmail.com"))
+        saved   = result.scalar_one()
+        user_id = str(saved.id)
 
     token    = create_access_token({"sub": user_id})
     response = await raw_client.get(
@@ -149,6 +153,7 @@ async def test_get_me_valid_token(raw_client: AsyncClient, test_db):
 async def test_get_me_inactive_user(raw_client: AsyncClient, test_db):
     """Test /auth/me with inactive user returns 401."""
     from app.models.user import User
+    from sqlalchemy import select
 
     engine, SessionLocal, db_name = test_db
 
@@ -161,8 +166,9 @@ async def test_get_me_inactive_user(raw_client: AsyncClient, test_db):
         )
         session.add(user)
         await session.commit()
-        #await session.refresh(user)
-        user_id = str(user.id)
+        result  = await session.execute(select(User).where(User.email == "inactive@gmail.com"))
+        saved   = result.scalar_one()
+        user_id = str(saved.id)
 
     token    = create_access_token({"sub": user_id})
     response = await raw_client.get(
@@ -170,7 +176,6 @@ async def test_get_me_inactive_user(raw_client: AsyncClient, test_db):
         headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 401
-
 
 @pytest.mark.asyncio
 async def test_auth_callback_bad_code(raw_client: AsyncClient):
@@ -229,7 +234,6 @@ async def test_auth_callback_existing_user(raw_client: AsyncClient, test_db):
 
     engine, SessionLocal, db_name = test_db
 
-    # Create existing user
     async with SessionLocal() as session:
         user = User(
             google_id = "existing_google_id",
@@ -270,23 +274,8 @@ async def test_auth_callback_existing_user(raw_client: AsyncClient, test_db):
 
 
 @pytest.mark.asyncio
-async def test_get_optional_user_no_credentials():
-    """Test get_optional_user returns None with no credentials."""
-    from app.core.security import get_optional_user
-    result = await get_optional_user(None, MagicMock())
-    assert result is None
-
-
-def test_user_repr():
-    """Test User model repr."""
-    from app.models.user import User
-    user = User(email="test@gmail.com", google_id="123")
-    assert "test@gmail.com" in repr(user)
-
-
-@pytest.mark.asyncio
 async def test_auth_callback_user_info_failure(raw_client: AsyncClient):
-    """Token exchange succeeds but Google user-info request fails (400)."""
+    """Token exchange succeeds but user info request fails."""
     mock_token_response             = MagicMock()
     mock_token_response.status_code = 200
     mock_token_response.json.return_value = {"access_token": "google_token_123"}
@@ -310,21 +299,35 @@ async def test_auth_callback_user_info_failure(raw_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_get_optional_user_no_credentials():
+    """Test get_optional_user returns None with no credentials."""
+    result = await get_optional_user(None, MagicMock())
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_get_optional_user_invalid_token_returns_none():
     """get_optional_user should return None for an invalid token."""
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token")
+    creds  = HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token")
     result = await get_optional_user(creds, MagicMock())
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_get_current_user_missing_sub(test_db):
-    """get_current_user raises when token payload has no 'sub'."""
+    """get_current_user raises when token payload has no sub."""
     engine, SessionLocal, db_name = test_db
-    token = create_access_token({})  # no 'sub' claim
+    token = create_access_token({})
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
     async with SessionLocal() as session:
         with pytest.raises(HTTPException) as exc:
             await get_current_user(creds, session)
     assert exc.value.status_code == 401
+
+
+def test_user_repr():
+    """Test User model repr."""
+    from app.models.user import User
+    user = User(email="test@gmail.com", google_id="123")
+    assert "test@gmail.com" in repr(user)

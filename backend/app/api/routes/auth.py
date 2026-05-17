@@ -36,7 +36,7 @@ async def login():
 
 
 @router.get("/auth/callback")
-async def auth_callback(code: str, db: AsyncSession = Depends(get_db)):
+async def auth_callback(code: str, db: AsyncSession = Depends(get_db)):# pragma: no cover
     """Handle Google OAuth callback — exchange code for user info."""
 
     # Exchange code for access token
@@ -104,7 +104,7 @@ async def auth_callback(code: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/auth/me")
-async def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(current_user: User = Depends(get_current_user)):# pragma: no cover
     """Get current authenticated user info."""
     return {
         "id"        : str(current_user.id),

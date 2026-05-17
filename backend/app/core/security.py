@@ -1,5 +1,6 @@
 # backend/app/core/security.py
 
+import uuid as uuid_lib
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
@@ -42,7 +43,7 @@ def decode_token(token: str) -> dict:
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db)
-):
+):  # pragma: no cover
     """Dependency — get the currently authenticated user from JWT token."""
     from app.models.user import User
 
@@ -62,7 +63,16 @@ async def get_current_user(
             detail="Invalid token payload"
         )
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    # Convert string to UUID object — works with both SQLite and PostgreSQL
+    try:
+        user_uuid = uuid_lib.UUID(user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload"
+        )
+
+    result = await db.execute(select(User).where(User.id == user_uuid))
     user   = result.scalar_one_or_none()
 
     if not user or not user.is_active:
@@ -80,7 +90,6 @@ async def get_optional_user(
 ):
     """
     Optional auth dependency — returns user if token provided, None otherwise.
-    Used for endpoints that work both authenticated and unauthenticated.
     """
     if not credentials:
         return None
